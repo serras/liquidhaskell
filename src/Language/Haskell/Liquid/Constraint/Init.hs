@@ -280,6 +280,7 @@ initCGI cfg info = CGInfo {
   , autoSize   = gsAutosize spc
   , allowHO    = higherOrderFlag cfg
   , ghcI       = info
+  , holeLets   = []
   }
   where
     tce        = gsTcEmbeds spc

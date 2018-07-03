@@ -71,10 +71,11 @@ instance (SubStratum a) => SubStratum [a] where
   subS su xs = subS su <$> xs
 
 instance SubStratum (Annot SpecType) where
-  subS su (AnnUse t) = AnnUse $ subS su t
-  subS su (AnnDef t) = AnnDef $ subS su t
-  subS su (AnnRDf t) = AnnRDf $ subS su t
-  subS _  (AnnLoc s) = AnnLoc s
+  subS su (AnnUse  t) = AnnUse  $ subS su t
+  subS su (AnnDef  t) = AnnDef  $ subS su t
+  subS su (AnnRDf  t) = AnnRDf  $ subS su t
+  subS su (AnnHole t) = AnnHole $ subS su t
+  subS _  (AnnLoc  s) = AnnLoc s
 
 instance SubStratum SpecType where
   subS su t = (\r -> r {ur_strata = subS su (ur_strata r)}) <$> t

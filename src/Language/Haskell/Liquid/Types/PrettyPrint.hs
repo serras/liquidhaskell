@@ -87,10 +87,11 @@ instance Show Predicate where
   show = showpp
 
 instance (PPrint t) => PPrint (Annot t) where
-  pprintTidy k (AnnUse t) = text "AnnUse" <+> pprintTidy k t
-  pprintTidy k (AnnDef t) = text "AnnDef" <+> pprintTidy k t
-  pprintTidy k (AnnRDf t) = text "AnnRDf" <+> pprintTidy k t
-  pprintTidy _ (AnnLoc l) = text "AnnLoc" <+> pprDoc l
+  pprintTidy k (AnnUse  t) = text "AnnUse"  <+> pprintTidy k t
+  pprintTidy k (AnnDef  t) = text "AnnDef"  <+> pprintTidy k t
+  pprintTidy k (AnnRDf  t) = text "AnnRDf"  <+> pprintTidy k t
+  pprintTidy k (AnnHole t) = text "AnnHole" <+> pprintTidy k t
+  pprintTidy _ (AnnLoc  l) = text "AnnLoc"  <+> pprDoc l
 
 instance PPrint a => PPrint (AnnInfo a) where
   pprintTidy k (AI m) = vcat $ pprAnnInfoBinds k <$> M.toList m

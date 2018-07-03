@@ -24,6 +24,9 @@ import           Text.Printf
 import           Language.Fixpoint.Misc
 import           Paths_liquidhaskell
 
+import           OccName (occName, occNameString)
+import           Var (Var, varName)
+
 type Nat = Int
 
 (.&&.), (.||.) :: (a -> Bool) -> (a -> Bool) -> a -> Bool
@@ -308,3 +311,18 @@ keyDiff f x1s x2s = M.elems (M.difference (m x1s) (m x2s))
   where 
     m xs          = M.fromList [(f x, x) | x <- xs] 
 
+
+data Holity = Hole | NotHole
+            deriving (Eq, Show, Ord)
+
+varHolity :: Var -> Holity
+varHolity x 
+  | occNameString (occName (varName x)) == "hole"
+  = Hole
+  | otherwise
+  = NotHole
+
+orHolity :: Holity -> Holity -> Holity
+Hole `orHolity` _ = Hole
+_ `orHolity` Hole = Hole
+_ `orHolity` _    = NotHole

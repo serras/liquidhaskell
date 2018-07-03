@@ -206,6 +206,7 @@ data CGInfo = CGInfo
   , allowHO    :: !Bool
   , ghcI       :: !GhcInfo
   , dataConTys :: ![(Var, SpecType)]           -- ^ Refined Types of Data Constructors
+  , holeLets   :: ![Var]
   }
 
 instance PPrint CGInfo where

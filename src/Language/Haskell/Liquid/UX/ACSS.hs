@@ -29,6 +29,7 @@ data AnnMap  = Ann {
     types  :: M.HashMap Loc (String, String) -- ^ Loc -> (Var, Type)
   , errors :: [(Loc, Loc, String)]           -- ^ List of error intervals
   , status :: !Status
+  , holes  :: M.HashMap Loc [(String, String)]
   }
 
 data Status = Safe | Unsafe | Error | Crash
@@ -93,7 +94,7 @@ annotTokenise baseLoc tx (src, annm) = zipWith (\(x,y) z -> (x,y,z)) toks annots
     linWidth   = length $ show $ length $ lines src
 
 spanAnnot :: Int -> AnnMap -> Loc -> Annotation
-spanAnnot w (Ann ts es _) span = A t e b
+spanAnnot w (Ann ts es _ _) span = A t e b
   where
     t = fmap snd (M.lookup span ts)
     e = fmap (\_ -> "ERROR") $ find (span `inRange`) [(x,y) | (x,y,_) <- es]
@@ -177,7 +178,7 @@ splitSrcAndAnns ::  String -> (String, AnnMap)
 splitSrcAndAnns s =
   let ls = lines s in
   case findIndex (breakS ==) ls of
-    Nothing -> (s, Ann M.empty [] Safe)
+    Nothing -> (s, Ann M.empty [] Safe M.empty)
     Just i  -> (src, ann)
                where (codes, _:mname:annots) = splitAt i ls
                      ann   = annotParse mname $ dropWhile isSpace $ unlines annots
@@ -198,7 +199,7 @@ breakS :: [Char]
 breakS = "MOUSEOVER ANNOTATIONS"
 
 annotParse :: String -> String -> AnnMap
-annotParse mname s = Ann (M.fromList ts) [(x,y,"") | (x,y) <- es] Safe
+annotParse mname s = Ann (M.fromList ts) [(x,y,"") | (x,y) <- es] Safe M.empty
   where
     (ts, es)       = partitionEithers $ parseLines mname 0 $ lines s
 
@@ -235,8 +236,10 @@ parseLines _ i _
   = panic Nothing $ "Error Parsing Annot Input on Line: " ++ show i
 
 instance Show AnnMap where
-  show (Ann ts es _ ) =  "\n\n" ++ (concatMap ppAnnotTyp $ M.toList ts)
-                                ++ (concatMap ppAnnotErr [(x,y) | (x,y,_) <- es])
+  show (Ann ts es _ hs ) =  "\n\n" ++ (concatMap ppAnnotTyp $ M.toList ts)
+                                   ++ (concatMap ppAnnotErr [(x,y) | (x,y,_) <- es])
+                                   ++ (concatMap ppAnnotTyp hs')
+    where hs' = [(l,p) | (l,ps) <- M.toList hs, p <- ps]
 
 ppAnnotTyp :: (PrintfArg t, PrintfType t1) => (Loc, (t, String)) -> t1
 ppAnnotTyp (L (l, c), (x, s))     = printf "%s\n%d\n%d\n%d\n%s\n\n\n" x l c (length $ lines s) s

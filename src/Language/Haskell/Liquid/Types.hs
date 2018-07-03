@@ -2155,6 +2155,7 @@ data Annot t
   | AnnDef t
   | AnnRDf t
   | AnnLoc SrcSpan
+  | AnnHole t
   deriving (Data, Typeable, Generic, Functor)
 
 instance Monoid (AnnInfo a) where
@@ -2174,18 +2175,20 @@ data Output a = O
   -- , o_errors :: ![UserError]
   , o_types  :: !(AnnInfo a)
   , o_templs :: !(AnnInfo a)
+  , o_holes  :: !(AnnInfo a)
   , o_bots   :: ![SrcSpan]
   , o_result :: ErrorResult
   } deriving (Typeable, Generic, Functor)
 
 emptyOutput :: Output a
-emptyOutput = O Nothing mempty mempty [] mempty
+emptyOutput = O Nothing mempty mempty mempty [] mempty
 
 instance Monoid (Output a) where
   mempty        = emptyOutput
   mappend o1 o2 = O { o_vars   = sortNub <$> mappend (o_vars   o1) (o_vars   o2)
                     , o_types  =             mappend (o_types  o1) (o_types  o2)
                     , o_templs =             mappend (o_templs o1) (o_templs o2)
+                    , o_holes  =             mappend (o_holes  o1) (o_holes  o2)
                     , o_bots   = sortNub  $  mappend (o_bots o1)   (o_bots   o2)
                     , o_result =             mappend (o_result o1) (o_result o2)
                     }

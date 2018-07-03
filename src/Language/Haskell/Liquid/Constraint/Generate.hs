@@ -507,10 +507,13 @@ consBind isRec γ (x, e, Assumed spect)
     where πs   = ty_preds $ toRTypeRep spect
 
 consBind isRec γ (x, e, Unknown)
-  = do t'    <- consE (γ `setBind` x) e
-       t     <- topSpecType x t'
+  = do (t',h) <- consE (γ `setBind` x) e
+       t      <- topSpecType x t'
        addIdA x (defAnn isRec t)
        when (isExportedId x) (addKuts x t)
+       case h of
+         Hole -> modify (\i -> i { holeLets = x : holeLets i })
+         _    -> return ()
        return $ Asserted t
 
 killSubst :: RReft -> RReft
@@ -681,9 +684,14 @@ cconsE' γ e@(Cast e' c) t
        addC (SubC γ t' t) ("cconsE Cast: " ++ GM.showPpr e)
 
 cconsE' γ e t
-  = do te  <- consE γ e
+  = do (te, h) <- consE γ e
        te' <- instantiatePreds γ e te >>= addPost γ
        addC (SubC γ te' t) ("cconsE: " ++ GM.showPpr e)
+       case h of
+         Hole    -> do addLocA Nothing (getLocation γ) (AnnHole t)
+                       -- Make them equivalent
+                       addC (SubC γ t te') ("cconsE: " ++ GM.showPpr e)
+         NotHole -> return ()
 
 lambdaSingleton :: CGEnv -> F.TCEmb TyCon -> Var -> CoreExpr -> UReft F.Reft
 lambdaSingleton γ tce x e
@@ -792,66 +800,71 @@ cconsLazyLet _ _ _
 --------------------------------------------------------------------------------
 -- | Type Synthesis ------------------------------------------------------------
 --------------------------------------------------------------------------------
-consE :: CGEnv -> CoreExpr -> CG SpecType
+consE :: CGEnv -> CoreExpr -> CG (SpecType, Holity)
 --------------------------------------------------------------------------------
 consE γ e
   | patternFlag γ
   , Just p <- Rs.lift e
-  = consPattern γ p
+  = (, NotHole) <$> consPattern γ p
 
 -- NV (below) is a hack to type polymorphic axiomatized functions
 -- no need to check this code with flag, the axioms environment with
 -- be empty if there is no axiomatization
 
 consE γ e'@(App e@(Var x) (Type τ)) | M.member x (aenv γ)
-  = do RAllT α te <- checkAll ("Non-all TyApp with expr", e) γ <$> consE γ e
+  = do (RAllT α te, h) <- checkAll ("Non-all TyApp with expr", e) γ <$> consE γ e
        t          <- if isGeneric (ty_var_value α) te then freshTy_type TypeInstE e τ else trueTy τ
        addW        $ WfC γ t
        t'         <- refreshVV t
        tt <- instantiatePreds γ e' $ subsTyVar_meet' (ty_var_value α, t') te
-       return $ strengthenMeet tt (singletonReft (M.lookup x $ aenv γ) x)
+       return (strengthenMeet tt (singletonReft (M.lookup x $ aenv γ) x), h)
 
 -- NV END HACK
 
 consE γ (Var x)
   = do t <- varRefType γ x
        addLocA (Just x) (getLocation γ) (varAnn γ x t)
-       return t
+       hLets <- holeLets <$> get
+       let h' = if x `elem` hLets then Hole else NotHole
+       return (t, (varHolity x) `orHolity` h')
 
 consE _ (Lit c)
-  = refreshVV $ uRType $ literalFRefType c
+  = (, NotHole) <$> (refreshVV $ uRType $ literalFRefType c)
 
 consE γ e'@(App e a@(Type τ))
-  = do RAllT α te <- checkAll ("Non-all TyApp with expr", e) γ <$> consE γ e
+  = do (RAllT α te, h) <- checkAll ("Non-all TyApp with expr", e) γ <$> consE γ e
        t          <- if isGeneric (ty_var_value α) te then freshTy_type TypeInstE e τ else trueTy τ
        addW        $ WfC γ t
        t'         <- refreshVV t
        tt         <- instantiatePreds γ e' (subsTyVar_meet' (ty_var_value α, t') te)
        -- NV TODO: embed this step with subsTyVar_meet'
        case rTVarToBind α of
-         Just (x, _) -> return $ maybe (checkUnbound γ e' x tt a) (F.subst1 tt . (x,)) (argType τ)
-         Nothing     -> return tt
+         Just (x, _) -> return (maybe (checkUnbound γ e' x tt a) (F.subst1 tt . (x,)) (argType τ), h)
+         Nothing     -> return (tt, h)
 
 consE γ e'@(App e a) | Just aDict <- getExprDict γ a
   = case dhasinfo (dlookup (denv γ) aDict) (getExprFun γ e) of
-      Just riSig -> return (fromRISig riSig)
+      Just riSig -> return (fromRISig riSig, NotHole)
       _          -> do
-        ([], πs, ls, te) <- bkUniv <$> consE γ e
-        te0              <- instantiatePreds γ e' $ foldr RAllP te πs
-        te'              <- instantiateStrata ls te0
-        (γ', te''')      <- dropExists γ te'
-        te''             <- dropConstraints γ te'''
+        (bt, h)     <- consE γ e
+        let ([], πs, ls, te) = bkUniv bt
+        te0         <- instantiatePreds γ e' $ foldr RAllP te πs
+        te'         <- instantiateStrata ls te0
+        (γ', te''') <- dropExists γ te'
+        te''        <- dropConstraints γ te'''
         updateLocA {- πs -}  (exprLoc e) te''
         let RFun x tx t _ = checkFun ("Non-fun App with caller ", e') γ te''
         pushConsBind      $ cconsE γ' a tx
-        addPost γ'        $ maybe (checkUnbound γ' e' x t a) (F.subst1 t . (x,)) (argExpr γ a)
+        pt <- addPost γ'  $ maybe (checkUnbound γ' e' x t a) (F.subst1 t . (x,)) (argExpr γ a)
+        return (pt, h)
 
 consE γ e'@(App e a)
-  = do ([], πs, ls, te) <- bkUniv <$> consE γ e
-       te0              <- instantiatePreds γ e' $ foldr RAllP te πs
-       te'              <- instantiateStrata ls te0
-       (γ', te''')      <- dropExists γ te'
-       te''             <- dropConstraints γ te'''
+  = do (bt, h)     <- consE γ e
+       let ([], πs, ls, te) = bkUniv bt
+       te0         <- instantiatePreds γ e' $ foldr RAllP te πs
+       te'         <- instantiateStrata ls te0
+       (γ', te''') <- dropExists γ te'
+       te''        <- dropConstraints γ te'''
        updateLocA (exprLoc e) te''
        (hasGhost, γ'', te''')     <- instantiateGhosts γ' te''
        let RFun x tx t _ = checkFun ("Non-fun App with caller ", e') γ te'''
@@ -862,38 +875,39 @@ consE γ e'@(App e a)
            tk   <- freshTy_type ImplictE e' $ exprType e'
            addW $ WfC γ tk
            addC (SubC γ'' tout tk) ""
-           return tk
-          else return tout
+           return (tk, NotHole)
+          else return (tout, h)
 
 consE γ (Lam α e) | isTyVar α
   = do γ' <- updateEnvironment γ α
-       liftM (RAllT (makeRTVar $ rTyVar α)) (consE γ' e)
+       (t, _) <- consE γ' e
+       return (RAllT (makeRTVar $ rTyVar α) t, NotHole)
 
 consE γ  e@(Lam x e1)
   = do tx      <- freshTy_type LamE (Var x) τx
        γ'      <- γ += ("consE", F.symbol x, tx)
-       t1      <- consE γ' e1
+       (t1, _) <- consE γ' e1
        addIdA x $ AnnDef tx
        addW     $ WfC γ tx
        tce     <- tyConEmbed <$> get
-       return   $ RFun (F.symbol x) tx t1 $ lambdaSingleton (addArgument γ x) tce x e1
+       return (RFun (F.symbol x) tx t1 $ lambdaSingleton (addArgument γ x) tce x e1, NotHole)
     where
       FunTy τx _ = exprType e
 
 consE γ e@(Let _ _)
-  = cconsFreshE LetE γ e
+  = (, NotHole) <$> cconsFreshE LetE γ e
 
 consE γ e@(Case _ _ _ [_])
   | Just p@(Rs.PatProject {}) <- Rs.lift e
-  = consPattern γ p
+  = (, NotHole) <$> consPattern γ p
 
 consE γ e@(Case _ _ _ cs)
-  = cconsFreshE (caseKVKind cs) γ e
+  = (, NotHole) <$> cconsFreshE (caseKVKind cs) γ e
 
 consE γ (Tick tt e)
-  = do t <- consE (setLocation γ (Sp.Tick tt)) e
+  = do (t, h) <- consE (setLocation γ (Sp.Tick tt)) e
        addLocA Nothing (GM.tickSrcSpan tt) (AnnUse t)
-       return t
+       return (t, h)
 
 -- See Note [Type classes with a single method]
 consE γ (Cast e co)
@@ -901,10 +915,10 @@ consE γ (Cast e co)
   = consE γ (f e)
 
 consE γ e@(Cast e' c)
-  = castTy γ (exprType e) e' c
+  = (, NotHole) <$> castTy γ (exprType e) e' c
 
 consE _ e@(Coercion _)
-   = trueTy $ exprType e
+   = (, NotHole) <$> (trueTy $ exprType e)
 
 consE _ e@(Type t)
   = panic Nothing $ "consE cannot handle type " ++ GM.showPpr (e, t)
@@ -950,10 +964,10 @@ consPattern :: CGEnv -> Rs.Pattern -> CG SpecType
  -}
 
 consPattern γ (Rs.PatBind e1 x e2 _ _ _ _ _) = do
-  tx <- checkMonad (msg, e1) γ <$> consE γ e1
+  tx <- checkMonad (msg, e1) γ . fst <$> consE γ e1
   γ' <- γ += ("consPattern", F.symbol x, tx)
   addIdA x (AnnDef tx)
-  mt <- consE γ' e2
+  (mt, _) <- consE γ' e2
   return mt
   where
     msg = "This expression has a refined monadic type; run with --no-pattern-inline: "
@@ -965,8 +979,8 @@ consPattern γ (Rs.PatBind e1 x e2 _ _ _ _ _) = do
       G |- return e ~ m t
  -}
 consPattern γ (Rs.PatReturn e m _ _ _) = do
-  t     <- consE γ e
-  mt    <- trueTy  m
+  (t, _) <- consE γ e
+  mt     <- trueTy  m
   return $ RAppTy mt t mempty
 
 {- [NOTE] special type rule for field projection, is
@@ -984,7 +998,7 @@ consPattern γ (Rs.PatProject xe _ τ c ys i) = do
   return t
 
 consPattern γ (Rs.PatSelfBind _ e) =
-  consE γ e
+  fst <$> consE γ e
 
 consPattern γ p@(Rs.PatSelfRecBind {}) =
   cconsFreshE LetE γ (Rs.lower p)
@@ -1215,9 +1229,9 @@ checkFun :: (Outputable a) => (String, a) -> CGEnv -> SpecType -> SpecType
 checkFun _ _ t@(RFun _ _ _ _) = t
 checkFun x g t                = checkErr x g t
 
-checkAll :: (Outputable a) => (String, a) -> CGEnv -> SpecType -> SpecType
-checkAll _ _ t@(RAllT _ _)    = t
-checkAll x g t                = checkErr x g t
+checkAll :: (Outputable a) => (String, a) -> CGEnv -> (SpecType, b) -> (SpecType, b)
+checkAll _ _ (t@(RAllT _ _), b) = (t, b)
+checkAll x g (t,             b) = (checkErr x g t, b)
 
 checkErr :: (Outputable a) => (String, a) -> CGEnv -> SpecType -> SpecType
 checkErr (msg, e) γ t         = panic (Just sp) $ msg ++ GM.showPpr e ++ ", type: " ++ showpp t
@@ -1297,7 +1311,7 @@ lamExpr _ _           = Nothing
 (??=) :: (?callStack :: CallStack) => CGEnv -> Var -> CG SpecType
 --------------------------------------------------------------------------------
 γ ??= x = case M.lookup x' (lcb γ) of
-            Just e  -> consE (γ -= x') e
+            Just e  -> fst <$> consE (γ -= x') e
             Nothing -> refreshTy tx
           where
             x' = F.symbol x

@@ -69,7 +69,6 @@ import           Language.Haskell.Liquid.UX.Tidy
 import           Language.Haskell.Liquid.Types                hiding (Located(..), Def(..))
 import           Language.Haskell.Liquid.Types.Specifications
 
-
 -- | @output@ creates the pretty printed output
 --------------------------------------------------------------------------------------------
 mkOutput :: Config -> ErrorResult -> FixSolution -> AnnInfo (Annot SpecType) -> Output Doc
@@ -79,12 +78,15 @@ mkOutput cfg res sol anna
       -- , o_errors = []
       , o_types  = toDoc <$> annTy
       , o_templs = toDoc <$> annTmpl
+      , o_holes  = toDoc <$> holeTy
       , o_bots   = mkBots    annTy
       , o_result = res
       }
   where
     annTmpl      = closeAnnots anna
+    holeTmpl     = closeHoles  anna
     annTy        = tidySpecType Lossy <$> applySolution sol annTmpl
+    holeTy       = tidySpecType Lossy <$> applySolution sol holeTmpl
     toDoc        = rtypeDoc tidy
     tidy         = if shortNames cfg then Lossy else Full
 
@@ -97,10 +99,11 @@ annotate cfg srcFs out
        when doAnnotate $ mapM_ (doGenerate cfg tplAnnMap typAnnMap annTyp) srcFs
        return typAnnMap
     where
-       tplAnnMap  = mkAnnMap cfg res annTpl
-       typAnnMap  = mkAnnMap cfg res annTyp
+       tplAnnMap  = mkAnnMap cfg res annTpl mempty  -- No holes in template
+       typAnnMap  = mkAnnMap cfg res annTyp holeTyp
        annTpl     = o_templs out
        annTyp     = o_types  out
+       holeTyp    = o_holes  out
        res        = o_result out
        bots       = o_bots   out
        showWarns  = not $ nowarnings    cfg
@@ -229,8 +232,12 @@ cssHTML css = unlines
 --   is required by `Language.Haskell.Liquid.ACSS` to generate mouseover
 --   annotations.
 
-mkAnnMap :: Config -> ErrorResult -> AnnInfo Doc -> ACSS.AnnMap
-mkAnnMap cfg res ann     = ACSS.Ann (mkAnnMapTyp cfg ann) (mkAnnMapErr res) (mkStatus res)
+mkAnnMap :: Config -> ErrorResult -> AnnInfo Doc -> AnnInfo Doc -> ACSS.AnnMap
+mkAnnMap cfg res ann holes
+  = ACSS.Ann (mkAnnMapTyp cfg ann)
+             (mkAnnMapErr res)
+             (mkStatus res)
+             (mkAnnMapTyp' cfg holes)
 
 mkStatus :: FixResult t -> ACSS.Status
 mkStatus (Safe)          = ACSS.Safe
@@ -255,6 +262,12 @@ cinfoErr e = case pos e of
 mkAnnMapTyp :: Config -> AnnInfo Doc -> M.HashMap Loc (String, String)
 mkAnnMapTyp cfg z = M.fromList $ map (first srcSpanStartLoc) $ mkAnnMapBinders cfg z
 
+mkAnnMapTyp' :: Config -> AnnInfo Doc -> M.HashMap Loc [(String, String)]
+mkAnnMapTyp' cfg z
+  = M.fromListWith (++)
+  $ map (\(x,y) -> (srcSpanStartLoc x, [y]))
+  $ mkAnnMapBinders' cfg z
+
 mkAnnMapBinders :: Config
                 -> AnnInfo Doc -> [(SrcLoc.RealSrcSpan, (String, String))]
 mkAnnMapBinders cfg (AI m)
@@ -265,20 +278,35 @@ mkAnnMapBinders cfg (AI m)
     bindStr (x, v) = (maybe "_" (symbolString . shorten . symbol) x, render v)
     shorten        = if shortNames cfg then dropModuleNames else id
 
+mkAnnMapBinders' :: Config
+                -> AnnInfo Doc -> [(SrcLoc.RealSrcSpan, (String, String))]
+mkAnnMapBinders' cfg (AI m)
+  = concatMap (map (second bindStr) . sortWith (srcSpanEndCol . fst))
+  $ groupWith (lineCol . fst) locBinds
+  where
+    locBinds       = [ (l, x) | (RealSrcSpan l, xs) <- M.toList m, oneLine l, x <- xs]
+    bindStr (x, v) = (maybe "_" (symbolString . shorten . symbol) x, render v)
+    shorten        = if shortNames cfg then dropModuleNames else id
+
 closeAnnots :: AnnInfo (Annot SpecType) -> AnnInfo SpecType
 closeAnnots = closeA . filterA . collapseA
+
+closeHoles :: AnnInfo (Annot SpecType) -> AnnInfo SpecType
+closeHoles = closeA . filterA . collapseHoleA
 
 closeA :: AnnInfo (Annot b) -> AnnInfo b
 closeA a@(AI m)   = cf <$> a
   where
     cf (AnnLoc l)  = case m `mlookup` l of
-                      [(_, AnnUse t)] -> t
-                      [(_, AnnDef t)] -> t
-                      [(_, AnnRDf t)] -> t
-                      _               -> panic Nothing $ "malformed AnnInfo: " ++ showPpr l
-    cf (AnnUse t) = t
-    cf (AnnDef t) = t
-    cf (AnnRDf t) = t
+                      [(_, AnnUse  t)] -> t
+                      [(_, AnnDef  t)] -> t
+                      [(_, AnnRDf  t)] -> t
+                      [(_, AnnHole t)] -> t
+                      _                -> panic Nothing $ "malformed AnnInfo: " ++ showPpr l
+    cf (AnnUse  t) = t
+    cf (AnnDef  t) = t
+    cf (AnnRDf  t) = t
+    cf (AnnHole t) = t
 
 filterA :: AnnInfo (Annot t) -> AnnInfo (Annot t)
 filterA (AI m) = AI (M.filter ff m)
@@ -301,6 +329,12 @@ pickOneA xas = case (rs, ds, ls, us) of
     ds = [x | x@(_, AnnDef _) <- xas]
     ls = [x | x@(_, AnnLoc _) <- xas]
     us = [x | x@(_, AnnUse _) <- xas]
+
+collapseHoleA :: AnnInfo (Annot t) -> AnnInfo (Annot t)
+collapseHoleA (AI m) = AI (fmap pickHoleA m)
+  where
+    pickHoleA :: [(t, Annot t1)] -> [(t, Annot t1)]
+    pickHoleA xas = [x | x@(_, AnnHole _) <- xas]
 
 ------------------------------------------------------------------------------
 -- | Tokenizing Refinement Type Annotations in @-blocks ----------------------
@@ -373,6 +407,7 @@ chopAltDBG y = filter (/= "")
 
 data Assoc k a    = Asc (M.HashMap k a)
 type AnnTypes     = Assoc Int (Assoc Int Annot1)
+type AnnHoles     = Assoc Int (Assoc Int [Annot1])
 newtype AnnErrors = AnnErrors [(Loc, Loc, String)]
 data Annot1       = A1  { ident :: String
                         , ann   :: String
@@ -436,24 +471,38 @@ instance (Show k, ToJSON a) => ToJSON (Assoc k a) where
       tshow        = T.pack . show
 
 instance ToJSON ACSS.AnnMap where
-  toJSON a = object [ "types"  .= toJSON (annTypes    a)
-                    , "errors" .= toJSON (annErrors   a)
+  toJSON a = object [ "types"  .= toJSON (annTypes (M.toList $ ACSS.types a))
+                    , "holes"  .= toJSON (annHoles (M.toList $ ACSS.holes a))
+                    , "errors" .= toJSON (annErrors a)
                     , "status" .= toJSON (ACSS.status a)
                     ]
 
 annErrors :: ACSS.AnnMap -> AnnErrors
 annErrors = AnnErrors . ACSS.errors
 
-annTypes         :: ACSS.AnnMap -> AnnTypes
+annTypes         ::[(Loc,(String, String))] -> AnnTypes
 annTypes a       = grp [(l, c, ann1 l c x s) | (l, c, x, s) <- binders]
   where
     ann1 l c x s = A1 x s l c
     grp          = L.foldl' (\m (r,c,x) -> ins r c x m) (Asc M.empty)
-    binders      = [(l, c, x, s) | (L (l, c), (x, s)) <- M.toList $ ACSS.types a]
+    binders      = [(l, c, x, s) | (L (l, c), (x, s)) <- a]
+
+annHoles         ::[(Loc,[(String, String)])] -> AnnHoles
+annHoles a       = grp [(l, c, ann1 l c x s) | (l, c, x, s) <- binders]
+  where
+    ann1 l c x s = A1 x s l c
+    grp          = L.foldl' (\m (r,c,x) -> insDupl r c x m) (Asc M.empty)
+    binders      = [(l, c, x, s) | (L (l, c), xs) <- a, (x, s) <- xs]
 
 ins :: (Eq k, Eq k1, Hashable k, Hashable k1)
     => k -> k1 -> a -> Assoc k (Assoc k1 a) -> Assoc k (Assoc k1 a)
 ins r c x (Asc m)  = Asc (M.insert r (Asc (M.insert c x rm)) m)
+  where
+    Asc rm         = M.lookupDefault (Asc M.empty) r m
+
+insDupl :: (Eq k, Eq k1, Hashable k, Hashable k1)
+        => k -> k1 -> a -> Assoc k (Assoc k1 [a]) -> Assoc k (Assoc k1 [a])
+insDupl r c x (Asc m)  = Asc (M.insert r (Asc (M.insertWith (++) c [x] rm)) m)
   where
     Asc rm         = M.lookupDefault (Asc M.empty) r m
 
