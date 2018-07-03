@@ -512,8 +512,8 @@ consBind isRec γ (x, e, Unknown)
        addIdA x (defAnn isRec t)
        when (isExportedId x) (addKuts x t)
        case h of
-         Hole -> modify (\i -> i { holeLets = x : holeLets i })
-         _    -> return ()
+         Hole _ -> modify (\i -> i { holeLets = x : holeLets i })
+         _      -> return ()
        return $ Asserted t
 
 killSubst :: RReft -> RReft
@@ -688,7 +688,7 @@ cconsE' γ e t
        te' <- instantiatePreds γ e te >>= addPost γ
        addC (SubC γ te' t) ("cconsE: " ++ GM.showPpr e)
        case h of
-         Hole    -> do addLocA Nothing (getLocation γ) (AnnHole t)
+         Hole x  -> do addLocA Nothing (getSrcSpan x) (AnnHole t)
                        -- Make them equivalent
                        addC (SubC γ t te') ("cconsE: " ++ GM.showPpr e)
          NotHole -> return ()
@@ -825,8 +825,8 @@ consE γ (Var x)
   = do t <- varRefType γ x
        addLocA (Just x) (getLocation γ) (varAnn γ x t)
        hLets <- holeLets <$> get
-       let h' = if x `elem` hLets then Hole else NotHole
-       return (t, (varHolity x) `orHolity` h')
+       let h' = if x `elem` hLets then Hole x else NotHole
+       return (t, h' `orHolity` varHolity x)
 
 consE _ (Lit c)
   = (, NotHole) <$> (refreshVV $ uRType $ literalFRefType c)

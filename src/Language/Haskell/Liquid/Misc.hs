@@ -312,17 +312,21 @@ keyDiff f x1s x2s = M.elems (M.difference (m x1s) (m x2s))
     m xs          = M.fromList [(f x, x) | x <- xs] 
 
 
-data Holity = Hole | NotHole
-            deriving (Eq, Show, Ord)
+data Holity = Hole Var | NotHole
+            deriving (Eq, Ord)
+
+instance Show Holity where
+  show (Hole x) = "Hole " ++ show (occNameString (occName (varName x)))
+  show NotHole  = "NoHole"
 
 varHolity :: Var -> Holity
 varHolity x 
   | occNameString (occName (varName x)) == "hole"
-  = Hole
+  = Hole x
   | otherwise
   = NotHole
 
 orHolity :: Holity -> Holity -> Holity
-Hole `orHolity` _ = Hole
-_ `orHolity` Hole = Hole
-_ `orHolity` _    = NotHole
+Hole x `orHolity` _ = Hole x
+_ `orHolity` Hole x = Hole x
+_ `orHolity` _      = NotHole
