@@ -183,6 +183,10 @@ config = cmdArgsMode $ Config {
     = def &= help "Don't display warnings, only show errors"
           &= name "no-warnings"
 
+ , noholes
+    = def &= help "Don't display hole information"
+          &= name "no-holes"
+
  , noannotations
     = def &= help "Don't create intermediate annotation files"
           &= name "no-annotations"
@@ -534,6 +538,7 @@ defConfig = Config
   , totalHaskell      = def
   , autoproofs        = def
   , nowarnings        = def
+  , noholes           = def
   , noannotations     = def
   , trustInternals    = False
   , caseExpandDepth   = 2 

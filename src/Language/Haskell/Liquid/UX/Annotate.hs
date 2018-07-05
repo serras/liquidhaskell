@@ -96,6 +96,8 @@ annotate :: Config -> [FilePath] -> Output Doc -> IO ACSS.AnnMap
 -------------------------------------------------------------------
 annotate cfg srcFs out
   = do when showWarns  $ forM_ bots (printf "WARNING: Found false in %s\n" . showPpr)
+       when showHoles  $ forM_ allHoles $ \(loc, ty) ->
+         printf "\nFound hole at %s\nExpected type: %s\n" (showPpr loc) (render ty)
        when doAnnotate $ mapM_ (doGenerate cfg tplAnnMap typAnnMap annTyp) srcFs
        return typAnnMap
     where
@@ -106,7 +108,9 @@ annotate cfg srcFs out
        holeTyp    = o_holes  out
        res        = o_result out
        bots       = o_bots   out
-       showWarns  = not $ nowarnings    cfg
+       allHoles   = L.sortOn fst [(l, t) | (l, ts) <- M.toList (unAI holeTyp), (_, t) <- ts]
+       showWarns  = not (nowarnings cfg) &&  M.null (unAI holeTyp)
+       showHoles  = not (noholes cfg)
        doAnnotate = not $ noannotations cfg
 
 doGenerate :: Config -> ACSS.AnnMap -> ACSS.AnnMap -> AnnInfo Doc -> FilePath -> IO ()

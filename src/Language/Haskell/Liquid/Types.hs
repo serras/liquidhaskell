@@ -2147,7 +2147,7 @@ instance B.Binary ty => B.Binary (RClass ty)
 -- | Annotations -------------------------------------------------------
 ------------------------------------------------------------------------
 
-newtype AnnInfo a = AI (M.HashMap SrcSpan [(Maybe Text, a)])
+newtype AnnInfo a = AI { unAI :: M.HashMap SrcSpan [(Maybe Text, a)] }
                     deriving (Data, Typeable, Generic, Functor)
 
 data Annot t

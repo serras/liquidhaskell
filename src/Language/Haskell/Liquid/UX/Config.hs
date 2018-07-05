@@ -50,6 +50,7 @@ data Config = Config
   , totalHaskell   :: Bool       -- ^ Check for termination and totality, Overrides no-termination flags
   , autoproofs     :: Bool       -- ^ automatically construct proofs from axioms
   , nowarnings     :: Bool       -- ^ disable warnings output (only show errors)
+  , noholes        :: Bool       -- ^ disable holes
   , noannotations  :: Bool       -- ^ disable creation of intermediate annotation files
   , trustInternals :: Bool       -- ^ type all internal variables with true
   , caseExpandDepth :: Int       -- ^ maximum case expand nesting depth. 
